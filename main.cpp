@@ -15,6 +15,9 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 #include <set>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include "opencv2/opencv.hpp"
 using namespace std;
 int fun1();
 int fun2();
@@ -22,12 +25,16 @@ int fun3();
 int fun4();
 
 bool fun4_connected(string, string, map<string, string>);
+int fun5();
+int fun6(int, char**);
+int fun7();
+int fun8();
 
 /*
  * 
  */
 int main(int argc, char** argv) {
-    fun4();
+    fun8();
     return 0;
 }
 
@@ -161,6 +168,7 @@ int fun3() {
             trial = fields[1];
             condition = fields[2];
             length = 0;
+            prevAOI = "";
         }
         if (fields[6].find("Joint") != string::npos) {
             if (prevAOI != fields[6]) {
@@ -219,26 +227,34 @@ int fun4() {
     }
     expansionFile.close();
 
-    ifstream inputfile("/home/chili/Desktop/DF_Dwells");
+    ifstream inputfile("/home/chili/Desktop/DF_Dwells_Whitespace");
 
     if (!inputfile.is_open()) {
         cout << "Error opening input file";
         return -1;
     }
 
-    ofstream outputfile("/home/chili/Desktop/DF_Triangles");
+    ofstream outputfile("/home/chili/Desktop/DF_Triangles_Collapse");
     if (!outputfile.is_open()) {
         cout << "Error opening output file";
         return -1;
     }
-    outputfile << "Participant,Trial,Condition,Triangle,Line\n";
+    outputfile << "Participant,Trial,Condition,Triangle,Duration\n";
     getline(inputfile, line);
     string participant = "", trial = "", condition;
-
     list<string> prevAOIs;
+    list<int> durations;
     int lineIndex = 1;
+    string prevTriangle;
     while (getline(inputfile, line)) {
         boost::split(fields, line, boost::is_any_of(","));
+        if (fields[1].compare("8") == 0)
+            continue;
+        if (fields[6].length() == 0) {
+            prevAOIs.clear();
+            durations.clear();
+            continue;
+        }
         /**********/
         if (participant == "") {
             participant = fields[0];
@@ -259,27 +275,46 @@ int fun4() {
 
         if (prevAOIs.size() == 0) {
             prevAOIs.push_back(AOI);
+            durations.push_back(boost::lexical_cast<int>(fields[4]));
             lineIndex++;
             continue;
         }
         if (!fun4_connected(AOI, prevAOIs.back(), expandMap[ boost::lexical_cast<int>(trial) - 1])) {
+            durations.clear();
             prevAOIs.clear();
         }
         prevAOIs.push_back(AOI);
+        durations.push_back(boost::lexical_cast<int>(fields[4]));
         if (prevAOIs.size() > 2) {
             vector<string> seq;
+            vector<int> seqDur;
             string pAOI;
-            for (list<string>::reverse_iterator rit = prevAOIs.rbegin(); rit != prevAOIs.rend(); ++rit) {
+            int pDuration = 0;
+            list<int>::reverse_iterator ritDur;
+            list<string>::reverse_iterator rit;
+            for (rit = prevAOIs.rbegin(),
+                    ritDur = durations.rbegin();
+                    rit != prevAOIs.rend(); ++rit, ++ritDur) {
+
                 string tmp = *rit;
+                int tmpDur = *ritDur;
+
                 if (pAOI.empty()) {
-                    if (tmp.length() > 1)
+                    if (tmp.length() > 1) {
                         seq.push_back(tmp);
+                        seqDur.push_back(tmpDur);
+                    }
                     pAOI = tmp;
+                    pDuration = tmpDur;
                     continue;
                 }
                 /*Beam-joint case or beam beam case*/
                 if (tmp.length() > 1) {
                     seq.push_back(tmp);
+                    if (pAOI.length() == 1)
+                        seqDur.push_back(tmpDur + pDuration);
+                    else
+                        seqDur.push_back(tmpDur);
                 } else if (tmp.length() == 1 && pAOI.length() == 1) {
                     string entry;
                     if (tmp.compare(pAOI) < 0)
@@ -288,11 +323,15 @@ int fun4() {
                         entry = pAOI + tmp;
                     string expansion = expandMap[ boost::lexical_cast<int>(trial) - 1].operator[](entry);
                     boost::split(fields, expansion, boost::is_any_of(":"));
-                    int collitions = 0;
                     for (int i = 0; i < fields.size(); i++) {
                         seq.push_back(fields[i]);
+                        seqDur.push_back(tmpDur + pDuration);
+                        tmpDur = 0;
+                        pDuration = 0;
                     }
-                }
+                    pDuration = 0;
+                } else
+                    pDuration = tmpDur;
 
                 pAOI = tmp;
             }
@@ -304,17 +343,22 @@ int fun4() {
                 if (seq.size() < fields.size())
                     continue;
                 bool is_valid;
-                for (int i = 0; i < fields.size(); i++){
-                    is_valid=false;
-                    for(int j=0;j<fields.size();j++)
-                         if (seq[j].compare(fields[i])==0)
+                int durationTriangle = 0;
+                for (int i = 0; i < fields.size(); i++) {
+                    is_valid = false;
+                    for (int j = 0; j < fields.size(); j++)
+                        if (seq[j].compare(fields[i]) == 0) {
+                            durationTriangle += seqDur[j];
                             is_valid = true;
-                    if(!is_valid)
+                        }
+                    if (!is_valid)
                         break;
-                }    
-                if (is_valid){
-                    outputfile << participant << "," << trial << "," << condition << "," << item->first << "\n";
+                }
+                if (is_valid) {
+                    if (prevTriangle.empty() || prevTriangle.compare(item->first) != 0)
+                        outputfile << participant << "," << trial << "," << condition << "," << item->first << "," << durationTriangle << "\n";
                     prevAOIs.clear();
+                    prevTriangle = item->first;
                 }
             }
 
@@ -330,6 +374,7 @@ int fun4() {
 
 bool fun4_connected(string AOI, string prevAOI, map<string, string> expansion) {
     /****/
+
     if (AOI.length() == 1 && prevAOI.length() == 1) {
         string tmp;
         if (AOI.compare(prevAOI) < 0)
@@ -358,3 +403,355 @@ bool fun4_connected(string AOI, string prevAOI, map<string, string> expansion) {
             return false;
     }
 }
+
+int fun5() {
+
+    ifstream inputfile("/home/chili/Desktop/DF_Dwells_Whitespace");
+
+    if (!inputfile.is_open()) {
+        cout << "Error opening input file";
+        return -1;
+    }
+
+    ofstream outputfile("/home/chili/Desktop/DF_Joints_Entries");
+    if (!outputfile.is_open()) {
+        cout << "Error opening output file";
+        return -1;
+    }
+    outputfile << "Participant,Trial,Condition,AOI,Entries\n";
+    string line;
+    getline(inputfile, line);
+    vector<string> fields;
+    string participant = "", trial = "", condition, prevAOI;
+    int length = 0;
+    map<string, int> entries;
+    while (getline(inputfile, line)) {
+        boost::split(fields, line, boost::is_any_of(","));
+        if (participant == "") {
+            participant = fields[0];
+            trial = fields[1];
+            condition = fields[2];
+        }
+        if (participant != fields[0] || trial != fields[1]) {
+            for (map<string, int>::iterator it = entries.begin();
+                    it != entries.end(); it++)
+                outputfile << participant << "," << trial << "," << condition << "," << it->first << "," << it->second << "\n";
+            participant = fields[0];
+            trial = fields[1];
+            condition = fields[2];
+            prevAOI = "";
+            entries.clear();
+        }
+        /************************/
+        if (fields[6].find("Joint") != string::npos) {
+            string joint = fields[6].substr(5, 1);
+            if (prevAOI.find(joint) != string::npos) {
+                if (entries.count(joint) == 0)
+                    entries[joint] = 1;
+                else
+                    entries[joint] = entries[joint] + 1;
+                prevAOI = "";
+
+            } else
+                prevAOI = fields[6];
+
+        } else if (prevAOI.find("Joint") != string::npos) {
+            string joint = prevAOI.substr(5, 1);
+            if (fields[6].find(joint) != string::npos) {
+                if (entries.count(joint) == 0)
+                    entries[joint] = 1;
+                else
+                    entries[joint] = entries[joint] + 1;
+                prevAOI = "";
+            } else
+                prevAOI = fields[6];
+
+        } else
+            prevAOI = fields[6];
+
+    }
+    inputfile.close();
+    outputfile.close();
+
+}
+
+int fun6(int argc, char** argv) {
+
+    ifstream input(argv[1]);
+
+    if (!input.is_open()) {
+        cout << "Error open input file";
+        return -1;
+    }
+
+    ofstream output("/home/chili/Desktop/DF_Duration", ios_base::app);
+    if (!output.is_open()) {
+        cout << "Error open output file";
+        return -1;
+    }
+    vector<string> fields;
+    string line;
+
+    boost::split(fields, argv[1], boost::is_any_of("-"));
+    line = fields[0];
+    boost::split(fields, line, boost::is_any_of("_"));
+
+    string participant = fields[1];
+    getline(input, line);
+
+    while (getline(input, line)) {
+        boost::split(fields, line, boost::is_any_of(","));
+        int start = boost::lexical_cast<int>(fields[1]);
+        int stop = boost::lexical_cast<int>(fields[2]);
+        output << participant << "," << argv[2] << "," << fields[0] << "," << stop - start << "\n";
+    }
+    output.close();
+    input.close();
+
+
+
+
+
+
+}
+
+//Saliency map per partciipant
+
+int fun7() {
+    vector<int> compression_params;
+    compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+    compression_params.push_back(9);
+
+    map<int, string> beams, joints;
+    int from_to[] = {0, 0, 1, 1, 2, 2, 3, 3};
+    ifstream inputfile("/home/chili/Desktop/Saliency");
+
+    if (!inputfile.is_open()) {
+        cout << "Error opening input file";
+        return -1;
+    }
+    vector<cv::Mat> AOIImages;
+    vector<cv::Mat> refImage;
+    for (int i = 0; i < 7; i++) {
+        string ref = "/home/chili/Desktop/Models/";
+        string index = boost::lexical_cast<string>(i + 1);
+        ref = ref + index + ".JPG";
+        string AOI = "/home/chili/Desktop/Models/";
+        AOI = AOI + index + ".AOI.BMP";
+        refImage.push_back(cv::imread(ref));
+        AOIImages.push_back(cv::imread(AOI));
+    }
+
+    ifstream inputAOICode("/home/chili/Desktop/Models/AOI_codes.csv");
+    if (!inputAOICode.is_open()) {
+        cerr << "aoicode file open failed:";
+        return -1;
+    }
+
+    string line;
+    while (getline(inputAOICode, line)) {
+        vector <std::string> fields;
+        boost::split(fields, line, boost::is_any_of(","));
+        string aoiName = fields[0];
+        //cout << fields[1] << " " << fields[2] << "\n";
+        int r = boost::lexical_cast<int>(fields[1]);
+        int b = boost::lexical_cast<int>(fields[2]);
+        //Beam
+        if (r > 0)
+            beams[r] = aoiName;
+        else
+            joints[b] = aoiName;
+    }
+    inputAOICode.close();
+
+
+
+    getline(inputfile, line);
+    vector<string> fields;
+    string trial, participant, condition;
+    int trial_index;
+    cv::Mat currImg;
+    while (getline(inputfile, line)) {
+        boost::split(fields, line, boost::is_any_of(","));
+        //Participant,Trial,Condition,Learner,primary.AOI,Dwell,Tot
+        if (fields[1].compare("8") == 0)
+            continue;
+        /**********/
+        if (participant.empty()) {
+            participant = fields[0];
+            trial = fields[1];
+            trial_index = boost::lexical_cast<int>(trial) - 1;
+            condition = fields[2];
+            currImg = cv::Mat(refImage[trial_index].rows, refImage[trial_index].cols, CV_8UC3);
+        }
+        if (participant != fields[0] || trial != fields[1]) {
+            string filename = "/home/chili/Desktop/" + participant + "-" + trial + "-saliency.png";
+            cv::imwrite(filename, currImg, compression_params);
+            participant = fields[0];
+            trial = fields[1];
+            condition = fields[2];
+            trial_index = boost::lexical_cast<int>(trial) - 1;
+            currImg = cv::Mat(refImage[trial_index].rows, refImage[trial_index].cols, CV_8UC3);
+        }
+        /************/
+
+
+
+        for (int i = 0; i < currImg.rows; i++)
+            for (int j = 0; j < currImg.cols; j++) {
+                cv::Vec3b intensity = AOIImages[trial_index].at<cv::Vec3b>(i, j);
+                cv::Vec3b truePixel = refImage[trial_index].at<cv::Vec3b>(i, j);
+                int blue = (int) intensity.val[0];
+                int red = (int) intensity.val[2];
+                string pixelAOI;
+                if (red > 0 && red < 255) {
+                    pixelAOI = beams[red];
+                } else if (blue > 0 && blue < 255) {
+                    pixelAOI = joints[blue];
+                }
+                if (pixelAOI.empty()) {
+                    cv::Vec3b newIntensity(truePixel.val[0], truePixel.val[1],
+                            truePixel.val[2]); //cv::saturate_cast<uchar>(dwells/tot * UCHAR_MAX/2)+UCHAR_MAX/2);
+                    currImg.at<cv::Vec3b>(i, j) = newIntensity;
+
+                }
+
+                if (pixelAOI.compare(fields[4]) == 0) {
+                    float dwells = boost::lexical_cast<float>(fields[5]);
+                    float tot = boost::lexical_cast<float>(fields[6]);
+                    cv::Vec3b newIntensity(0, 0, 0);
+                    float ratio = dwells / tot;
+                    if (ratio < 0.5) {
+                        newIntensity[0] = UCHAR_MAX * (1 - ratio) / 0.5;
+                        newIntensity[1] = UCHAR_MAX * (ratio) / 0.5;
+                    } else {
+                        newIntensity[1] = UCHAR_MAX * (1 - ratio - 0.5) / 0.5;
+                        newIntensity[2] = UCHAR_MAX * (ratio - 0.5) / 0.5;
+                    }
+                    currImg.at<cv::Vec3b>(i, j) = newIntensity;
+                }
+            }
+    }
+}
+
+int fun8() {
+    vector<int> compression_params;
+    compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+    compression_params.push_back(9);
+
+    map<int, string> beams, joints;
+    ifstream inputfile("/home/chili/Desktop/Saliency_Learner");
+
+    if (!inputfile.is_open()) {
+        cout << "Error opening input file";
+        return -1;
+    }
+    vector<cv::Mat> AOIImages;
+    vector<cv::Mat> refImage;
+    for (int i = 0; i < 7; i++) {
+        string ref = "/home/chili/Desktop/Models/";
+        string index = boost::lexical_cast<string>(i + 1);
+        ref = ref + index + ".JPG";
+        string AOI = "/home/chili/Desktop/Models/";
+        AOI = AOI + index + ".AOI.BMP";
+        refImage.push_back(cv::imread(ref));
+        AOIImages.push_back(cv::imread(AOI));
+    }
+
+    ifstream inputAOICode("/home/chili/Desktop/Models/AOI_codes.csv");
+    if (!inputAOICode.is_open()) {
+        cerr << "aoicode file open failed:";
+        return -1;
+    }
+
+    string line;
+    while (getline(inputAOICode, line)) {
+        vector <std::string> fields;
+        boost::split(fields, line, boost::is_any_of(","));
+        string aoiName = fields[0];
+        //cout << fields[1] << " " << fields[2] << "\n";
+        int r = boost::lexical_cast<int>(fields[1]);
+        int b = boost::lexical_cast<int>(fields[2]);
+        //Beam
+        if (r > 0)
+            beams[r] = aoiName;
+        else
+            joints[b] = aoiName;
+    }
+    inputAOICode.close();
+
+
+
+    getline(inputfile, line);
+    vector<string> fields;
+    string trial, condition;
+    int trial_index;
+    cv::Mat currImg;
+    while (getline(inputfile, line)) {
+        boost::split(fields, line, boost::is_any_of(","));
+        //Trial,Condition,primary.AOI,prop,max_prop,sum_prop,min_prop
+        if (fields[0].compare("8") == 0)
+            continue;
+        /**********/
+        if (trial.empty()) {
+            trial = fields[0];
+            trial_index = boost::lexical_cast<int>(trial) - 1;
+            condition = fields[1];
+            currImg = cv::Mat(refImage[trial_index].rows, refImage[trial_index].cols, CV_8UC3);
+        }
+        if (trial.compare(fields[0]) != 0 || condition.compare(fields[1]) != 0) {
+            string filename = "/home/chili/Desktop/" + trial + "-" + condition + "-saliency.png";
+            cv::imwrite(filename, currImg, compression_params);
+            trial = fields[0];
+            condition = fields[1];
+            trial_index = boost::lexical_cast<int>(trial) - 1;
+            currImg = cv::Mat(refImage[trial_index].rows, refImage[trial_index].cols, CV_8UC3);
+        }
+        /************/
+
+
+
+        for (int i = 0; i < currImg.rows; i++)
+            for (int j = 0; j < currImg.cols; j++) {
+                cv::Vec3b intensity = AOIImages[trial_index].at<cv::Vec3b>(i, j);
+                cv::Vec3b truePixel = refImage[trial_index].at<cv::Vec3b>(i, j);
+                int blue = (int) intensity.val[0];
+                int red = (int) intensity.val[2];
+                string pixelAOI;
+                if (red > 0 && red < 255) {
+                    pixelAOI = beams[red];
+                } else if (blue > 0 && blue < 255) {
+                    pixelAOI = joints[blue];
+                }
+                if (pixelAOI.empty()) {
+                    cv::Vec3b newIntensity(truePixel.val[0], truePixel.val[1],
+                            truePixel.val[2]); //cv::saturate_cast<uchar>(dwells/tot * UCHAR_MAX/2)+UCHAR_MAX/2);
+                    currImg.at<cv::Vec3b>(i, j) = newIntensity;
+
+                }
+
+                if (pixelAOI.compare(fields[2]) == 0) {
+                    float prop = boost::lexical_cast<float>(fields[3]);
+                    float max = boost::lexical_cast<float>(fields[4]);
+                    float sum = boost::lexical_cast<float>(fields[5]);
+                    float min = boost::lexical_cast<float>(fields[6]);
+
+                    cv::Vec3b newIntensity(0, 0, 0);
+                    float ratio = (prop-min) / (max-min);
+                    if (ratio < 0.5) {
+                        newIntensity[0] = UCHAR_MAX * (1 - ((ratio) / 0.5));
+                        newIntensity[1] = UCHAR_MAX * (ratio) / 0.5;
+                    } else {
+                        newIntensity[1] = UCHAR_MAX * (1 - ((ratio - 0.5) / 0.5));
+                        newIntensity[2] = UCHAR_MAX * (ratio - 0.5) / 0.5;
+                    }
+                    currImg.at<cv::Vec3b>(i, j) = newIntensity;
+                }
+            }
+    }
+    string filename = "/home/chili/Desktop/" + trial + "-" + condition + "-saliency.png";
+    cv::imwrite(filename, currImg, compression_params);
+}
+
+
+
